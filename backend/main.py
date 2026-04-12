@@ -3,15 +3,21 @@ from __future__ import annotations
 import io
 import os
 from pathlib import Path
+from typing import Union
 
 import cv2
 import numpy as np
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from openai import OpenAI
+from pydantic import BaseModel
 
 from vision import process_water_image
 from model import calculate_depletion_year
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
@@ -73,6 +79,45 @@ def get_historical_image(year: int, mask: bool = Query(False)):
         io.BytesIO(_encode_jpeg(img_bgr)),
         media_type="image/jpeg",
     )
+
+
+class ReportRequest(BaseModel):
+    hotspot: str
+    depletion_year: Union[int, str]
+    sample_years: list[int]
+    pixel_counts: list[int]
+
+
+@app.post("/api/report")
+def generate_report(req: ReportRequest):
+    """Call OpenAI to generate a policy brief for politicians."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "OPENAI_API_KEY not set")
+
+    pixel_change = req.pixel_counts[0] - req.pixel_counts[-1]
+    pct_loss = round(pixel_change / req.pixel_counts[0] * 100, 1) if req.pixel_counts[0] else 0
+
+    prompt = (
+        f"You are an environmental policy advisor briefing legislators. "
+        f"Write a concise, urgent 3-sentence policy brief (no bullet points, plain prose) about {req.hotspot}. "
+        f"Key data: satellite analysis shows {pct_loss}% water surface loss from "
+        f"{req.sample_years[0]} to {req.sample_years[-1]}. "
+        f"At the current rate of depletion, the water body is projected to reach critical lows by {req.depletion_year}. "
+        f"Focus on 2-3 specific, actionable policy interventions legislators can enact now. "
+        f"Be direct, data-driven, and politically actionable. Do not use headers or bullet points."
+    )
+
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=200,
+        temperature=0.7,
+    )
+
+    text = response.choices[0].message.content or ""
+    return {"report": text.strip()}
 
 
 @app.get("/api/images/future/{step}")

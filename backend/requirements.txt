@@ -1,5 +1,7 @@
 fastapi
 uvicorn[standard]
+openai
+python-dotenv
 opencv-python
 scikit-learn
 numpy
